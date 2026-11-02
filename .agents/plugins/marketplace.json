@@ -1,0 +1,20 @@
+{
+  "name": "codex-bg-jobs",
+  "interface": {
+    "displayName": "Codex Background Jobs"
+  },
+  "plugins": [
+    {
+      "name": "bg-jobs",
+      "source": {
+        "source": "local",
+        "path": "./plugins/bg-jobs"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

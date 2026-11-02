@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# bg — 后台任务 + 完成后自动唤醒当前 Codex 会话
+# 用法见: bg help
+set -euo pipefail
+
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+ROOT="${CODEX_BG_ROOT:-${CODEX_HOME:-$HOME/.codex}/bg-jobs}"
+mkdir -p "$ROOT"
+
+die() { echo "bg: $*" >&2; exit 2; }
+
+usage() {
+  cat <<'EOF'
+bg run [-n NAME] [--no-notify] -- '<shell 命令字符串>'
+bg run [-n NAME] [--no-notify] -- prog arg1 arg2 ...
+    后台启动命令，立即返回 job id。命令结束后自动 `codex queue` 一条
+    "[bg-job done]" 消息到当前会话（$CODEX_THREAD_ID），把你唤醒。
+bg list                 列出最近的任务
+bg status ID            查看状态（running / exited N / killed）
+bg tail ID [N]          看日志最后 N 行（默认 40）
+bg wait ID [SECONDS]    在本轮内有上限地等待（默认 120，最多 600），结束后打印结果
+bg kill ID              终止任务（含子进程）
+EOF
+}
+
+job_dir() {
+  local id="${1:-}"; [ -n "$id" ] || die "缺少 job id"
+  [ -d "$ROOT/$id" ] || die "找不到任务: $id"
+  printf '%s' "$ROOT/$id"
+}
+
+state_of() {
+  local dir="$1"
+  if [ -f "$dir/exit" ]; then
+    if [ -f "$dir/killed" ]; then echo "killed (exit $(cat "$dir/exit"))"
+    else echo "exited $(cat "$dir/exit")"; fi
+  elif [ -f "$dir/runner.pid" ] && kill -0 "$(cat "$dir/runner.pid")" 2>/dev/null; then
+    echo "running"
+  else
+    echo "lost (runner 已不在，且没有退出码)"
+  fi
+}
+
+elapsed_of() {
+  local dir="$1" s e
+  s=$(cat "$dir/started" 2>/dev/null || echo 0)
+  e=$(cat "$dir/ended" 2>/dev/null || date +%s)
+  echo "$((e - s))s"
+}
+
+cmd_run() {
+  local name="job" notify=1
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -n|--name) name="${2:-job}"; shift 2 ;;
+      --no-notify) notify=0; shift ;;
+      --) shift; break ;;
+      *) break ;;
+    esac
+  done
+  [ $# -gt 0 ] || die "缺少要运行的命令"
+
+  name=$(printf '%s' "$name" | tr -c 'A-Za-z0-9_.-' '_' | cut -c1-40)
+  local id dir cmdstr
+  id="$name-$(date +%Y%m%d-%H%M%S)-$RANDOM"
+  dir="$ROOT/$id"
+  mkdir -p "$dir"
+
+  if [ $# -eq 1 ]; then cmdstr="$1"; else cmdstr=$(printf '%q ' "$@"); fi
+  printf '%s\n' "$cmdstr" > "$dir/cmd"
+  pwd > "$dir/cwd"
+  printf '%s\n' "${CODEX_THREAD_ID:-}" > "$dir/thread"
+  (command -v codex || true) > "$dir/codex_bin"
+  date +%s > "$dir/started"
+
+  # 用 setsid 脱离 Codex 的进程组/会话：Codex 在每次命令结束时会清理整组子进程，
+  # 仅 nohup 挡不住。macOS 没有 setsid 命令，用系统自带 perl 实现。
+  BG_DIR="$dir" BG_ID="$id" BG_NOTIFY="$notify" \
+    perl -MPOSIX -e '$SIG{HUP}="IGNORE"; POSIX::setsid(); exec @ARGV or die "exec: $!"' \
+    "$SELF" __runner >/dev/null 2>"$dir/runner.err" </dev/null &
+  disown 2>/dev/null || true
+  # 等 runner 确认已脱离（写出 detached）再返回，避免 Codex 在 setsid 之前就清理掉它
+  local i=0
+  while [ ! -f "$dir/detached" ] && [ $i -lt 50 ]; do /bin/sleep 0.1; i=$((i + 1)); done
+  [ -f "$dir/detached" ] || echo "warning: runner 未确认脱离，见 $dir/runner.err"
+
+  echo "started id=$id"
+  echo "log=$dir/log"
+  if [ "$notify" = 1 ] && [ -z "${CODEX_THREAD_ID:-}" ]; then
+    echo "warning: 没有 CODEX_THREAD_ID，结束时无法自动唤醒会话；请用 bg wait / bg status 查看"
+  fi
+}
+
+cmd_runner() {
+  local dir="$BG_DIR" id="$BG_ID" rc child
+  echo $$ > "$dir/runner.pid"
+  ps -o pid=,pgid=,sess= -p $$ > "$dir/detached" 2>/dev/null || touch "$dir/detached"
+  cd "$(cat "$dir/cwd")"
+  bash -c "$(cat "$dir/cmd")" >"$dir/log" 2>&1 </dev/null &
+  child=$!
+  echo "$child" > "$dir/pid"
+  set +e; wait "$child"; rc=$?; set -e
+  date +%s > "$dir/ended"
+  echo "$rc" > "$dir/exit.tmp" && mv "$dir/exit.tmp" "$dir/exit"
+
+  local thread codex_bin
+  thread=$(cat "$dir/thread" 2>/dev/null || true)
+  codex_bin=$(cat "$dir/codex_bin" 2>/dev/null || true)
+  # 任务期间 Codex 可能被升级/重装，原路径失效时重新查找
+  [ -x "$codex_bin" ] || codex_bin=$(command -v codex 2>/dev/null || true)
+  [ "$BG_NOTIFY" = 1 ] && [ -n "$thread" ] && [ -n "$codex_bin" ] || exit 0
+
+  local status tail_txt msg
+  status=$(state_of "$dir")
+  tail_txt=$(tail -n 20 "$dir/log" 2>/dev/null | cut -c1-300 | tail -c 3000)
+  msg=$(cat <<EOF
+[bg-job done] id=$id status=$status elapsed=$(elapsed_of "$dir")
+cmd: $(cut -c1-300 "$dir/cmd")
+log: $dir/log
+--- log tail ---
+$tail_txt
+--- end ---
+（这是 background-jobs skill 自动发来的完成通知：请读日志结果，然后继续之前的任务。）
+EOF
+)
+  "$codex_bin" queue --thread "$thread" --message "$msg" >>"$dir/notify.log" 2>&1 \
+    && touch "$dir/notified" || true
+}
+
+cmd_list() {
+  local d n=0
+  # shellcheck disable=SC2045
+  for d in $(ls -1t "$ROOT" 2>/dev/null); do
+    [ -d "$ROOT/$d" ] || continue
+    printf '%-45s %-22s %8s  %s\n' "$d" "$(state_of "$ROOT/$d")" "$(elapsed_of "$ROOT/$d")" \
+      "$(cut -c1-60 "$ROOT/$d/cmd" 2>/dev/null)"
+    n=$((n + 1)); [ $n -ge 20 ] && break
+  done
+  [ $n -gt 0 ] || echo "(没有任务)"
+}
+
+cmd_status() {
+  local dir; dir=$(job_dir "${1:-}")
+  echo "id=$1"
+  echo "status=$(state_of "$dir")"
+  echo "elapsed=$(elapsed_of "$dir")"
+  echo "cmd=$(cat "$dir/cmd")"
+  echo "log=$dir/log"
+  [ -f "$dir/notified" ] && echo "notified=yes"
+  return 0
+}
+
+cmd_tail() {
+  local dir; dir=$(job_dir "${1:-}")
+  tail -n "${2:-40}" "$dir/log" 2>/dev/null || echo "(暂无日志)"
+}
+
+cmd_wait() {
+  local id="${1:-}" secs="${2:-120}" dir i=0
+  dir=$(job_dir "$id")
+  [ "$secs" -gt 600 ] 2>/dev/null && secs=600
+  while [ ! -f "$dir/exit" ] && [ $i -lt "$secs" ]; do
+    case "$(state_of "$dir")" in lost*) break ;; esac
+    /bin/sleep 2; i=$((i + 2))
+  done
+  cmd_status "$id"
+  echo "--- log tail ---"
+  cmd_tail "$id" 30
+  [ -f "$dir/exit" ] || { echo "(仍在运行；不要循环等待，结束后会自动收到通知)"; return 0; }
+}
+
+cmd_kill() {
+  local dir pid; dir=$(job_dir "${1:-}")
+  [ -f "$dir/exit" ] && { echo "已经结束: $(state_of "$dir")"; return 0; }
+  touch "$dir/killed"
+  pid=$(cat "$dir/pid" 2>/dev/null || true)
+  if [ -n "$pid" ]; then
+    pkill -TERM -P "$pid" 2>/dev/null || true
+    kill -TERM "$pid" 2>/dev/null || true
+  fi
+  echo "已发送 TERM: $1"
+}
+
+sub="${1:-help}"; shift || true
+case "$sub" in
+  run) cmd_run "$@" ;;
+  __runner) cmd_runner ;;
+  list|ls) cmd_list ;;
+  status) cmd_status "$@" ;;
+  tail|log) cmd_tail "$@" ;;
+  wait) cmd_wait "$@" ;;
+  kill) cmd_kill "$@" ;;
+  help|-h|--help) usage ;;
+  *) usage; exit 2 ;;
+esac

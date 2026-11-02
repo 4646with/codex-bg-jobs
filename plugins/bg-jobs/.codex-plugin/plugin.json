@@ -1,0 +1,29 @@
+{
+  "name": "bg-jobs",
+  "version": "0.1.0",
+  "description": "Run long shell commands in the background and automatically wake the current Codex session when they finish.",
+  "author": {
+    "name": "bg-jobs contributors"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/4646with/codex-bg-jobs",
+  "repository": "https://github.com/4646with/codex-bg-jobs",
+  "keywords": [
+    "background",
+    "jobs",
+    "long-running",
+    "notify",
+    "hooks"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Background Jobs",
+    "shortDescription": "后台跑长命令，跑完自动唤醒会话",
+    "longDescription": "把构建、测试、部署等耗时命令挂到后台运行，Codex 不必干等；命令结束后自动给当前会话发送完成通知，Codex 读取日志后继续任务。",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Write"
+    ]
+  }
+}
