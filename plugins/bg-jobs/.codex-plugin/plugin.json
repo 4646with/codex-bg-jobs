@@ -1,6 +1,6 @@
 {
   "name": "bg-jobs",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Run long shell commands in the background and automatically wake the current Codex session when they finish.",
   "author": {
     "name": "bg-jobs contributors"

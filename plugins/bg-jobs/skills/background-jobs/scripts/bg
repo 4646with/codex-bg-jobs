@@ -13,7 +13,7 @@ usage() {
   cat <<'EOF'
 bg run [-n NAME] [--no-notify] -- '<shell 命令字符串>'
 bg run [-n NAME] [--no-notify] -- prog arg1 arg2 ...
-    后台启动命令，立即返回 job id。命令结束后自动 `codex queue` 一条
+    后台启动命令，立即返回 job id。命令结束后自动投递一条
     "[bg-job done]" 消息到当前会话（$CODEX_THREAD_ID），把你唤醒。
 bg list                 列出最近的任务
 bg status ID            查看状态（running / exited N / killed）
@@ -108,7 +108,7 @@ cmd_runner() {
   codex_bin=$(cat "$dir/codex_bin" 2>/dev/null || true)
   # 任务期间 Codex 可能被升级/重装，原路径失效时重新查找
   [ -x "$codex_bin" ] || codex_bin=$(command -v codex 2>/dev/null || true)
-  [ "$BG_NOTIFY" = 1 ] && [ -n "$thread" ] && [ -n "$codex_bin" ] || exit 0
+  [ "$BG_NOTIFY" = 1 ] && [ -n "$thread" ] || exit 0
 
   local status tail_txt msg
   status=$(state_of "$dir")
@@ -123,8 +123,13 @@ $tail_txt
 （这是 background-jobs skill 自动发来的完成通知：请读日志结果，然后继续之前的任务。）
 EOF
 )
-  "$codex_bin" queue --thread "$thread" --message "$msg" >>"$dir/notify.log" 2>&1 \
-    && touch "$dir/notified" || true
+  local delivery=0
+  python3 -I "$(dirname "$SELF")/notify_native.py" "$thread" <<< "$msg" >>"$dir/notify.log" 2>&1 || delivery=$?
+  case "$delivery" in
+    0) touch "$dir/notified" ;;
+    2) [ -n "$codex_bin" ] && "$codex_bin" queue --thread "$thread" --message "$msg" >>"$dir/notify.log" 2>&1 && touch "$dir/notified" ;;
+  esac
+
 }
 
 cmd_list() {
