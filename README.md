@@ -16,7 +16,15 @@ Codex：已后台启动，Job ID：build-20261102-055411-76，跑完会自动通
 Codex：构建成功，退出码 0。接下来……
 ```
 
-## 安装
+## 一句话安装
+
+复制下面这句话，发给能操作本机终端的 agent：
+
+```text
+请按 https://github.com/4646with/codex-bg-jobs 的 README，检查本机兼容性并安装 bg-jobs 插件，核对并启用它的 SessionStart hook；如果需要我在 /hooks 中手动信任，请告诉我选哪一项，最后用后台任务运行 sleep 20 && echo done，验证原 Codex 会话能收到完成通知并读到 done。
+```
+
+## 手动安装
 
 需要 Codex CLI **0.163 或更高版本**，并且在 macOS 或 Linux 上使用（依赖 `bash`、`perl`、`python3`，系统一般自带）。
 
@@ -44,7 +52,7 @@ Codex 出于安全考虑，新安装插件里的 hook 默认不运行。打开 C
 新开一个 Codex 会话，说：
 
 ```
-帮我跑一下：sleep 20 && echo done
+请用后台任务运行 sleep 20 && echo done，完成后告诉我输出。
 ```
 
 看到 Codex 回复 Job ID 并结束这一轮，约 20 秒后自己出现 `[bg-job done]` 并接着回复，就说明装好了。
