@@ -47,3 +47,14 @@ $BG kill ID         # 终止
    或在本轮用 `$BG wait`。
 6. 任务数据在 `~/.codex/bg-jobs/<id>/`（cmd、log、exit、notify.log）。通知没到时，先看
    `notify.log`。
+
+## 普通命令已在运行时
+
+如果 Codex 桌面端的 `exec_command` 已返回 `session_id`，用户希望它继续跑并在结束后通知，可以保留原进程。本机已验证的方式依赖支持跨轮运行的 `functions.exec` 单元、`write_stdin` 和当前聊天的 `CODEX_THREAD_ID`。
+
+1. 保留首次返回的输出和会话编号。不要再用 `bg run` 启动同一条命令。
+2. 用一个可持续运行的 `functions.exec` 单元（首行 `// @exec: {"yield_time_ms": 1}`）独占等待读取。单元内部 await `tools.write_stdin({session_id, chars:"", yield_time_ms:300000})`；如果仍在运行，继续等待同一编号。按顺序处理每次新增的输出，长日志应分段保存到任务专属文件。
+3. 拿到最终退出码后，在该单元内调用一次 `codex queue --thread "$CODEX_THREAD_ID" --message ...`。消息带会话编号、退出码和结果位置。仅将固定文本和已校验的数字拼入 shell 命令，不要把原始日志拼入命令。检查投递结果。读取失败时单独报告，不能当作退出码 0。
+4. 单元返回运行中后即可告诉用户任务编号并结束本轮。原生会话编号不适用于脚本的 `bg status` 和 `bg tail`。环境缺少上述能力时，继续用原会话读取结果，不要承诺跨轮自动通知。
+
+此方式适用于无需交互的命令。验证覆盖聊天保持打开的场景；客户端退出或重启后的恢复不在验证范围内。
